@@ -68,8 +68,11 @@ object Protocols {
 
   // ── Messages pour le Client ────────────────────────────────────────────────
   sealed trait ClientCommand
-  case object StartNormalLogin                         extends ClientCommand
-  case object StartBruteForce                          extends ClientCommand
-  case object Disconnect                               extends ClientCommand
-  final case class GotAuthResponse(resp: AuthResponse) extends ClientCommand
+  case object StartNormalLogin                          extends ClientCommand
+  case object StartBruteForce                           extends ClientCommand
+  case object Disconnect                                extends ClientCommand
+  case object RequestBalance                            extends ClientCommand
+  final case class GotAuthResponse(resp: AuthResponse)  extends ClientCommand
+  final case class GotBalance(amount: Double)           extends ClientCommand
+  final case class GotAccessDenied(reason: String)      extends ClientCommand
 }

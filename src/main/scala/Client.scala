@@ -3,22 +3,24 @@ package securebank
 import akka.actor.typed.{Behavior, ActorRef}
 import akka.actor.typed.scaladsl.Behaviors
 import Protocols._
+import ResourceServer._
 
 object Client {
 
-  // FIX : password conservé dans tous les états pour permettre la reconnexion
   def apply(
-    username:   String,
-    password:   String,
-    authServer: ActorRef[AuthCommand]
+    username:       String,
+    password:       String,
+    authServer:     ActorRef[AuthCommand],
+    resourceServer: ActorRef[ResourceCommand]
   ): Behavior[ClientCommand] =
-    idle(username, password, authServer)
+    idle(username, password, authServer, resourceServer)
 
   // ─ P0 : Idle ──────────────────────────────────────────────────────────────
   private def idle(
-    username:   String,
-    password:   String,
-    authServer: ActorRef[AuthCommand]
+    username:       String,
+    password:       String,
+    authServer:     ActorRef[AuthCommand],
+    resourceServer: ActorRef[ResourceCommand]
   ): Behavior[ClientCommand] =
     Behaviors.receive { (ctx, msg) =>
       msg match {
@@ -26,13 +28,13 @@ object Client {
           ctx.log.info(s"[Client:$username] Connexion normale...")
           val adapter = ctx.messageAdapter[AuthResponse](GotAuthResponse)
           authServer ! Authenticate(username, password, adapter)
-          awaitingAuth(username, password, authServer)
+          awaitingAuth(username, password, authServer, resourceServer)
 
         case StartBruteForce =>
           ctx.log.warn(s"[Client:$username] Brute-force — tentative 1/3")
           val adapter = ctx.messageAdapter[AuthResponse](GotAuthResponse)
           authServer ! Authenticate(username, "WRONG_1", adapter)
-          awaitingBrute(username, password, authServer, attempt = 1)
+          awaitingBrute(username, password, authServer, resourceServer, attempt = 1)
 
         case _ => Behaviors.same
       }
@@ -40,22 +42,21 @@ object Client {
 
   // ─ P1 : AwaitingAuth (connexion normale) ──────────────────────────────────
   private def awaitingAuth(
-    username:   String,
-    password:   String,
-    authServer: ActorRef[AuthCommand]
+    username:       String,
+    password:       String,
+    authServer:     ActorRef[AuthCommand],
+    resourceServer: ActorRef[ResourceCommand]
   ): Behavior[ClientCommand] =
     Behaviors.receive { (ctx, msg) =>
       msg match {
-        // ─ T1 : Auth OK → P4/P5 ─
         case GotAuthResponse(AuthSuccess(token)) =>
           ctx.log.info(s"[Client:$username] Authentifié — $token")
           ctx.log.info(s"[Client:$username] Session ouverte — accès au compte disponible")
-          inSession(username, password, token, authServer)
+          inSession(username, password, token, authServer, resourceServer)
 
-        // ─ T2 : Auth KO → P0 + P3 ─
         case GotAuthResponse(AuthFailure(reason, attempts)) =>
           ctx.log.warn(s"[Client:$username] Échec ($reason) — $attempts/3")
-          idle(username, password, authServer)  // FIX : password conservé
+          idle(username, password, authServer, resourceServer)
 
         case GotAuthResponse(AccountLocked) =>
           ctx.log.error(s"[Client:$username] Compte bloqué — état P7")
@@ -67,10 +68,11 @@ object Client {
 
   // ─ P1 : AwaitingAuth (brute-force) ────────────────────────────────────────
   private def awaitingBrute(
-    username:   String,
-    password:   String,
-    authServer: ActorRef[AuthCommand],
-    attempt:    Int
+    username:       String,
+    password:       String,
+    authServer:     ActorRef[AuthCommand],
+    resourceServer: ActorRef[ResourceCommand],
+    attempt:        Int
   ): Behavior[ClientCommand] =
     Behaviors.receive { (ctx, msg) =>
       msg match {
@@ -78,9 +80,8 @@ object Client {
           ctx.log.warn(s"[Client:$username] Brute-force — tentative ${attempt + 1}/3")
           val adapter = ctx.messageAdapter[AuthResponse](GotAuthResponse)
           authServer ! Authenticate(username, s"WRONG_${attempt + 1}", adapter)
-          awaitingBrute(username, password, authServer, attempt + 1)
+          awaitingBrute(username, password, authServer, resourceServer, attempt + 1)
 
-        // ─ T7 : P3×3 → P7 Compte Bloqué (envoyé par TokenStore) ──────────
         case GotAuthResponse(AccountLocked) =>
           ctx.log.error(s"[Client:$username] COMPTE BLOQUÉ — état absorbant P7 atteint")
           blocked(username)
@@ -91,17 +92,34 @@ object Client {
 
   // ─ P4/P5 : In Session ─────────────────────────────────────────────────────
   private def inSession(
-    username:   String,
-    password:   String,
-    token:      JwtToken,
-    authServer: ActorRef[AuthCommand]
+    username:       String,
+    password:       String,
+    token:          JwtToken,
+    authServer:     ActorRef[AuthCommand],
+    resourceServer: ActorRef[ResourceCommand]
   ): Behavior[ClientCommand] =
     Behaviors.receive { (ctx, msg) =>
       msg match {
-        // ─ T5 : Déconnecter → P0 (FIX : password conservé) ───────────────
+        case RequestBalance =>
+          ctx.log.info(s"[Client:$username] Demande de solde...")
+          val adapter = ctx.messageAdapter[ResourceResponse] {
+            case BalanceOk(_, amount)  => GotBalance(amount)
+            case AccessDenied(reason)  => GotAccessDenied(reason)
+          }
+          resourceServer ! GetBalance(token, adapter)
+          Behaviors.same
+
+        case GotBalance(amount) =>
+          ctx.log.info(f"[Client:$username] Solde : $amount%.2f €")
+          Behaviors.same
+
+        case GotAccessDenied(reason) =>
+          ctx.log.warn(s"[Client:$username] Accès refusé : $reason")
+          Behaviors.same
+
         case Disconnect =>
           ctx.log.info(s"[Client:$username] Déconnexion — retour à Idle")
-          idle(username, password, authServer)  // FIX : password conservé
+          idle(username, password, authServer, resourceServer)
 
         case _ =>
           ctx.log.warn(s"[Client:$username] Action ignorée en session : $msg")
@@ -109,7 +127,7 @@ object Client {
       }
     }
 
-  // ─ P7 : Compte Bloqué — état absorbant, aucune transition sortante ─────────
+  // ─ P7 : Compte Bloqué — état absorbant ────────────────────────────────────
   private def blocked(username: String): Behavior[ClientCommand] =
     Behaviors.receive { (ctx, msg) =>
       ctx.log.error(s"[Client:$username] BLOQUÉ — message ignoré : $msg")
