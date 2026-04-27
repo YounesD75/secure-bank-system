@@ -12,21 +12,43 @@ case class Transition(
 )
 
 // ── Réseau de Pétri (immuable) ────────────────────────────────────────────────
+//
+// netGuards : gardes par transition — transitionId -> (placeId -> prédicat sur tokens)
+// Une transition n'est franchissable que si TOUS ses prédicats de garde sont satisfaits
+// en plus des exigences de jetons standard (simule un read-arc / arc inhibiteur).
 
 case class PetriNet(
   places:      Map[String, Place],
-  transitions: Map[String, Transition]
+  transitions: Map[String, Transition],
+  netGuards:   Map[String, Map[String, Int => Boolean]] = Map.empty
 ) {
 
   // Marquage courant : placeId -> nb jetons
   def marking: Map[String, Int] =
     places.map { case (id, p) => id -> p.tokens }
 
-  // Vérifie que chaque place d'entrée de t a assez de jetons
-  def isEnabled(t: Transition): Boolean =
-    t.inputs.forall { case (pid, need) =>
+  // Retourne une copie du réseau avec un marquage arbitraire (gardes conservées)
+  def withMarking(m: Map[String, Int]): PetriNet =
+    copy(places = places.map { case (id, p) => id -> p.copy(tokens = m.getOrElse(id, 0)) })
+
+  // Surcharge avec gardes explicites (placeId -> prédicat) en plus des jetons
+  def isEnabled(t: Transition, guards: Map[String, Int => Boolean]): Boolean = {
+    val tokensOk = t.inputs.forall { case (pid, need) =>
       places.get(pid).exists(_.tokens >= need)
     }
+    val guardsOk = guards.forall { case (pid, pred) =>
+      places.get(pid).exists(p => pred(p.tokens))
+    }
+    tokensOk && guardsOk
+  }
+
+  // Délègue aux gardes stockées dans le réseau pour cette transition
+  def isEnabled(t: Transition): Boolean =
+    isEnabled(t, netGuards.getOrElse(t.id, Map.empty))
+
+  // Franchit t si les conditions (tokens + gardes explicites) sont remplies
+  def fireWithGuards(t: Transition, guards: Map[String, Int => Boolean]): Option[PetriNet] =
+    if (isEnabled(t, guards)) Some(fire(t)) else None
 
   // Retourne un nouveau PetriNet avec le marquage mis à jour après franchissement de t
   def fire(t: Transition): PetriNet = {
@@ -41,10 +63,6 @@ case class PetriNet(
   def enabledTransitions: List[Transition] =
     transitions.values.filter(isEnabled).toList.sortBy(_.id)
 
-  // Reconstruit un PetriNet avec un marquage arbitraire (structure identique)
-  private def fromMarking(m: Map[String, Int]): PetriNet =
-    copy(places = places.map { case (id, p) => id -> p.copy(tokens = m.getOrElse(id, 0)) })
-
   // BFS : explore tous les marquages atteignables en au plus maxSteps franchissements
   def reachabilityAnalysis(maxSteps: Int): Set[Map[String, Int]] = {
     var visited  = Set(marking)
@@ -53,10 +71,10 @@ case class PetriNet(
     (1 to maxSteps).foreach { _ =>
       if (frontier.nonEmpty) {
         val next = for {
-          m       <- frontier
-          net2     = fromMarking(m)
-          t       <- net2.enabledTransitions
-          nextMark = net2.fire(t).marking
+          m        <- frontier
+          net2      = withMarking(m)
+          t        <- net2.enabledTransitions
+          nextMark  = net2.fire(t).marking
           if !visited.contains(nextMark)
         } yield nextMark
 
@@ -70,12 +88,20 @@ case class PetriNet(
   // Retourne true si au moins un marquage atteignable est un deadlock
   def hasDeadlock(maxSteps: Int): Boolean =
     reachabilityAnalysis(maxSteps).exists { m =>
-      fromMarking(m).enabledTransitions.isEmpty
+      withMarking(m).enabledTransitions.isEmpty
     }
 
-  // Retourne true si property est vraie sur TOUS les marquages atteignables en maxSteps étapes
+  // Retourne true si property est vraie sur TOUS les marquages atteignables
   def checkLTL(property: Map[String, Int] => Boolean, maxSteps: Int): Boolean =
     reachabilityAnalysis(maxSteps).forall(property)
+
+  // Pour tout marquage m où trigger(m) est vrai, vérifie que forbidden(m) est faux
+  def checkSafetyFromStates(
+    trigger:   Map[String, Int] => Boolean,
+    forbidden: Map[String, Int] => Boolean,
+    maxSteps:  Int
+  ): Boolean =
+    reachabilityAnalysis(maxSteps).forall(m => !trigger(m) || !forbidden(m))
 
   // Vérifie que sum(coef(p) * tokens(p)) est constant sur tous les marquages atteignables
   def checkPInvariant(coefficients: Map[String, Int]): Boolean = {
@@ -110,7 +136,13 @@ object PetriNetBuilder {
    *    T4 check_token    : P4 → P5
    *    T5 disconnect     : P5 → P0
    *    T6 revoke_token   : P4 → P0 + P6
-   *    T7 account_locked : 3×P3 → P7
+   *    T7 account_locked : 3×P3 → P7   [garde : P5 == 0]
+   *    T4 check_token    : P4 → P5    [garde : P7 == 0]
+   *
+   *  Gardes :
+   *    T7 : P5 == 0 — le verrouillage ne peut survenir pendant une consultation de solde.
+   *    T4 : P7 == 0 — impossible de consulter le solde si le compte est déjà verrouillé.
+   *  Ces deux gardes ensemble rendent {P5=1, P7=1} inatteignable → LTL3 vérifiée.
    *
    *  P-invariant : P0 + P1 + P2 + P4 + P5 = 1  (conservation de la session)
    */
@@ -123,7 +155,7 @@ object PetriNetBuilder {
       "P4" -> Place("P4", 0),   // TokenActive / InSession
       "P5" -> Place("P5", 0),   // ValidatedSession (balance accessible)
       "P6" -> Place("P6", 0),   // TokenRevoked
-      "P7" -> Place("P7", 0)    // AccountLocked (absorbant)
+      "P7" -> Place("P7", 0)    // AccountLocked
     )
 
     val transitions = Map(
@@ -153,7 +185,15 @@ object PetriNetBuilder {
                 outputs = Map("P7" -> 1))
     )
 
-    PetriNet(places, transitions)
+    // Gardes :
+    //   T7 ne franchit que si P5 == 0 (pas de verrouillage pendant une consultation de solde)
+    //   T4 ne franchit que si P7 == 0 (pas de consultation de solde si compte verrouillé)
+    val guards: Map[String, Map[String, Int => Boolean]] = Map(
+      "T7" -> Map("P5" -> ((t: Int) => t == 0)),
+      "T4" -> Map("P7" -> ((t: Int) => t == 0))
+    )
+
+    PetriNet(places, transitions, netGuards = guards)
   }
 
   def report(): Unit = {
@@ -192,7 +232,7 @@ object PetriNetBuilder {
     // ── Deadlock ──────────────────────────────────────────────────
     val dead = net.hasDeadlock(maxSteps = 10)
     println(s"\n── Deadlock détecté (10 étapes) : $dead")
-    if (!dead) println("   → Le réseau est vivant : chaque état atteignable a au moins une transition franchissable.")
+    if (!dead) println("   → Réseau vivant : chaque état atteignable a au moins une transition franchissable.")
 
     // ── P-invariant ───────────────────────────────────────────────
     val inv = net.checkPInvariant(
@@ -201,61 +241,64 @@ object PetriNetBuilder {
     println(s"\n── P-invariant P0+P1+P2+P4+P5=1 (30 étapes) : $inv")
     if (inv) println("   → Conservation de la session : exactement 1 jeton dans l'état session à tout moment.")
 
-    // ── Vérification LTL ─────────────────────────────────────────────────────
-    println(s"\n── Vérification LTL (checkLTL, maxSteps=30)")
+    // ── Vérification LTL ─────────────────────────────────────────
+    println(s"\n── Vérification LTL (maxSteps=30)")
 
-    case class LtlSpec(
-      name:     String,
-      formula:  String,
-      property: Map[String, Int] => Boolean,
-      note:     String
+    // LTL1 — checkSafetyFromStates : pour tout état où P6>0, P5 doit être 0
+    val ltl1 = net.checkSafetyFromStates(
+      trigger   = m => m.getOrElse("P6", 0) > 0,
+      forbidden = m => m.getOrElse("P5", 0) > 0,
+      maxSteps  = 30
     )
+    println(s"""
+   LTL1 — G(¬valid_token → ¬balance_visible)
+   Formule  : ∀m. P6(m)>0 → P5(m)=0   [checkSafetyFromStates]
+   Résultat : $ltl1
+   Note     : FAUX — P6 est un compteur monotone sans arc de retrait.
+              Après toute révocation P6>0 persiste ; une nouvelle session
+              peut atteindre P5=1. Correction nécessaire : garde P6==0 sur T3/T4,
+              ou modélisation par jeton d'identité de token (coloured Petri net).""")
 
-    val ltlSpecs = List(
-      LtlSpec(
-        name    = "LTL1 — G(¬valid_token → ¬balance_visible)",
-        formula = "G(¬(P5>0 ∧ P6>0))",
-        property = m => !(m("P5") > 0 && m.getOrElse("P6", 0) > 0),
-        note    = "FAUX : P6 n'est jamais consommé ; après toute révocation P6>0 reste permanent.\n" +
-                  "        Une nouvelle session valide peut atteindre P5=1 avec P6>0 encore présent.\n" +
-                  "        Le modèle ne distingue pas l'identité des tokens — limitation du marquage scalaire."
-      ),
-      LtlSpec(
-        name    = "LTL2 — G(failures >= 3 → AF account_locked)",
-        formula = "G(¬(P3≥3 ∧ P7=0))",
-        property = m => !(m.getOrElse("P3", 0) >= 3 && m.getOrElse("P7", 0) == 0),
-        note    = "FAUX (attendu) : le BFS explore les états intermédiaires où P3≥3 avant que T7\n" +
-                  "        soit franchi. Il s'agit d'une propriété de vivacité (AF) que la vérification\n" +
-                  "        par marquages atteignables seuls ne peut pas prouver — il faudrait un model\n" +
-                  "        checker LTL complet (CTL* / µ-calcul) pour établir AF account_locked."
-      ),
-      LtlSpec(
-        name    = "LTL3 — G(account_locked → AG ¬valid_session)",
-        formula = "G(¬(P7>0 ∧ P5>0))",
-        property = m => !(m.getOrElse("P7", 0) > 0 && m.getOrElse("P5", 0) > 0),
-        note    = "FAUX : T7 (account_locked) ne consomme que P3 et ne touche pas l'état session.\n" +
-                  "        Il peut franchir pendant que la session est en P5 (balance consultée),\n" +
-                  "        produisant {P5=1, P7=1}. Un modèle correct nécessiterait un arc P5→T7\n" +
-                  "        ou une inhibition de T4/T5 par P7."
-      ),
-      LtlSpec(
-        name    = "LTL4 — G(token_revoked → ¬balance_visible)",
-        formula = "G(¬(P6>0 ∧ P5>0))",
-        property = m => !(m.getOrElse("P6", 0) > 0 && m.getOrElse("P5", 0) > 0),
-        note    = "FAUX : même raison que LTL1 — P6 est un compteur monotone croissant.\n" +
-                  "        La présence de P6>0 coexiste avec P5=1 d'une nouvelle session valide.\n" +
-                  "        Propriété satisfaite dans le système réel (TokenStore invalide\n" +
-                  "        les tokens révoqués), mais non modélisable par marquage scalaire seul."
-      )
+    // LTL2 — checkLTL : propriété de vivacité, attendue false par BFS pur
+    val ltl2 = net.checkLTL(
+      property = m => !(m.getOrElse("P3", 0) >= 3 && m.getOrElse("P7", 0) == 0),
+      maxSteps = 30
     )
+    println(s"""
+   LTL2 — G(failures >= 3 → AF account_locked)
+   Formule  : G(¬(P3≥3 ∧ P7=0))   [checkLTL]
+   Résultat : $ltl2
+   Note     : FAUX (attendu) — le BFS visite les états {P3≥3, P7=0} AVANT
+              que T7 soit franchi. AF est une propriété de vivacité temporelle ;
+              checkLTL ne vérifie que des propriétés de sûreté sur états isolés,
+              pas des formules avec opérateur F (CTL* / µ-calcul requis).""")
 
-    ltlSpecs.foreach { spec =>
-      val result = net.checkLTL(spec.property, maxSteps = 30)
-      println(s"\n   ${spec.name}")
-      println(s"   Formule  : ${spec.formula}")
-      println(s"   Résultat : $result")
-      println(s"   Note     : ${spec.note}")
-    }
+    // LTL3 — checkLTL : corrigé par la garde P5==0 sur T7
+    val ltl3 = net.checkLTL(
+      property = m => !(m.getOrElse("P7", 0) > 0 && m.getOrElse("P5", 0) > 0),
+      maxSteps = 30
+    )
+    println(s"""
+   LTL3 — G(account_locked → AG ¬valid_session)
+   Formule  : G(¬(P7>0 ∧ P5>0))   [checkLTL]
+   Résultat : $ltl3
+   Note     : ${if (ltl3) "VRAI ✓ — corrigé par deux gardes complémentaires :\n              · T7 garde P5==0 : pas de verrouillage pendant une consultation.\n              · T4 garde P7==0 : pas de consultation si compte verrouillé.\n              La garde T7 seule ne suffit pas — T7 pouvait franchir avant P5=1\n              puis la session atteindre P5. T4 bloque ce chemin résiduel."
+               else       "FAUX — gardes insuffisantes, {P5=1, P7=1} reste atteignable."}""")
+
+    // LTL4 — checkSafetyFromStates : symétrique de LTL1
+    val ltl4 = net.checkSafetyFromStates(
+      trigger   = m => m.getOrElse("P6", 0) > 0,
+      forbidden = m => m.getOrElse("P5", 0) > 0,
+      maxSteps  = 30
+    )
+    println(s"""
+   LTL4 — G(token_revoked → ¬balance_visible)
+   Formule  : ∀m. P6(m)>0 → P5(m)=0   [checkSafetyFromStates]
+   Résultat : $ltl4
+   Note     : FAUX — même cause que LTL1 (P6 monotone, pas d'inhibition de T4).
+              La propriété est satisfaite dans le système Akka réel : TokenStore
+              rejette les tokens révoqués via ValidateToken → TokenInvalid,
+              mais cette invariance d'identité n'est pas exprimable en Pétri scalaire.""")
 
     println(s"\n$sep\n")
   }
