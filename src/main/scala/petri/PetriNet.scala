@@ -73,6 +73,10 @@ case class PetriNet(
       fromMarking(m).enabledTransitions.isEmpty
     }
 
+  // Retourne true si property est vraie sur TOUS les marquages atteignables en maxSteps étapes
+  def checkLTL(property: Map[String, Int] => Boolean, maxSteps: Int): Boolean =
+    reachabilityAnalysis(maxSteps).forall(property)
+
   // Vérifie que sum(coef(p) * tokens(p)) est constant sur tous les marquages atteignables
   def checkPInvariant(coefficients: Map[String, Int]): Boolean = {
     def value(m: Map[String, Int]): Int =
@@ -196,6 +200,62 @@ object PetriNetBuilder {
     )
     println(s"\n── P-invariant P0+P1+P2+P4+P5=1 (30 étapes) : $inv")
     if (inv) println("   → Conservation de la session : exactement 1 jeton dans l'état session à tout moment.")
+
+    // ── Vérification LTL ─────────────────────────────────────────────────────
+    println(s"\n── Vérification LTL (checkLTL, maxSteps=30)")
+
+    case class LtlSpec(
+      name:     String,
+      formula:  String,
+      property: Map[String, Int] => Boolean,
+      note:     String
+    )
+
+    val ltlSpecs = List(
+      LtlSpec(
+        name    = "LTL1 — G(¬valid_token → ¬balance_visible)",
+        formula = "G(¬(P5>0 ∧ P6>0))",
+        property = m => !(m("P5") > 0 && m.getOrElse("P6", 0) > 0),
+        note    = "FAUX : P6 n'est jamais consommé ; après toute révocation P6>0 reste permanent.\n" +
+                  "        Une nouvelle session valide peut atteindre P5=1 avec P6>0 encore présent.\n" +
+                  "        Le modèle ne distingue pas l'identité des tokens — limitation du marquage scalaire."
+      ),
+      LtlSpec(
+        name    = "LTL2 — G(failures >= 3 → AF account_locked)",
+        formula = "G(¬(P3≥3 ∧ P7=0))",
+        property = m => !(m.getOrElse("P3", 0) >= 3 && m.getOrElse("P7", 0) == 0),
+        note    = "FAUX (attendu) : le BFS explore les états intermédiaires où P3≥3 avant que T7\n" +
+                  "        soit franchi. Il s'agit d'une propriété de vivacité (AF) que la vérification\n" +
+                  "        par marquages atteignables seuls ne peut pas prouver — il faudrait un model\n" +
+                  "        checker LTL complet (CTL* / µ-calcul) pour établir AF account_locked."
+      ),
+      LtlSpec(
+        name    = "LTL3 — G(account_locked → AG ¬valid_session)",
+        formula = "G(¬(P7>0 ∧ P5>0))",
+        property = m => !(m.getOrElse("P7", 0) > 0 && m.getOrElse("P5", 0) > 0),
+        note    = "FAUX : T7 (account_locked) ne consomme que P3 et ne touche pas l'état session.\n" +
+                  "        Il peut franchir pendant que la session est en P5 (balance consultée),\n" +
+                  "        produisant {P5=1, P7=1}. Un modèle correct nécessiterait un arc P5→T7\n" +
+                  "        ou une inhibition de T4/T5 par P7."
+      ),
+      LtlSpec(
+        name    = "LTL4 — G(token_revoked → ¬balance_visible)",
+        formula = "G(¬(P6>0 ∧ P5>0))",
+        property = m => !(m.getOrElse("P6", 0) > 0 && m.getOrElse("P5", 0) > 0),
+        note    = "FAUX : même raison que LTL1 — P6 est un compteur monotone croissant.\n" +
+                  "        La présence de P6>0 coexiste avec P5=1 d'une nouvelle session valide.\n" +
+                  "        Propriété satisfaite dans le système réel (TokenStore invalide\n" +
+                  "        les tokens révoqués), mais non modélisable par marquage scalaire seul."
+      )
+    )
+
+    ltlSpecs.foreach { spec =>
+      val result = net.checkLTL(spec.property, maxSteps = 30)
+      println(s"\n   ${spec.name}")
+      println(s"   Formule  : ${spec.formula}")
+      println(s"   Résultat : $result")
+      println(s"   Note     : ${spec.note}")
+    }
 
     println(s"\n$sep\n")
   }
