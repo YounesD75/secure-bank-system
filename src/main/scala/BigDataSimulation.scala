@@ -7,6 +7,7 @@ import Protocols._
 import securebank.ResourceServer.ResourceCommand
 import scala.concurrent.duration._
 import scala.util.Random
+import securebank.analytics.ParquetEventWriter
 
 object BigDataSimulation {
 
@@ -34,8 +35,8 @@ object BigDataSimulation {
 
   def apply(): Behavior[SimulationCommand] = {
     Behaviors.setup { ctx =>
-      val tokenStore = ctx.spawn(TokenStore(), "TokenStore")
-      val authServer = ctx.spawn(AuthServer(tokenStore), "AuthServer")
+      val tokenStore = ctx.spawn(TokenStore(ParquetEventWriter.write), "TokenStore")
+      val authServer = ctx.spawn(AuthServer(tokenStore, ParquetEventWriter.write), "AuthServer")
       val resourceServer = ctx.spawn(ResourceServer(tokenStore), "ResourceServer")
       
       Behaviors.withTimers { timers =>
@@ -82,7 +83,6 @@ object BigDataSimulation {
             )
             client ! StartNormalLogin
             
-            // Déconnexion après 3 secondes
             timers.startSingleTimer(RunBatch, 500.millis)
           }
           
@@ -95,14 +95,12 @@ object BigDataSimulation {
       case RunAttacks =>
         ctx.log.info("🔥 Lancement des attaques...")
         
-        // Credential stuffing
         val stuffingAttacker = ctx.spawn(
           Attacker("mass-stuffer", authServer, resourceServer),
           "mass-stuffer"
         )
         stuffingAttacker ! Attacker.LaunchCredentialStuffing
         
-        // Brute-force sur quelques cibles
         USERS.keys.toList.take(5).foreach { target =>
           val attacker = ctx.spawn(
             Attacker(target, authServer, resourceServer),

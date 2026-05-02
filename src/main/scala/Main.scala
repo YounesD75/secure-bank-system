@@ -4,6 +4,7 @@ import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.Behaviors
 import Protocols._
 import scala.concurrent.duration._
+import securebank.analytics.ParquetEventWriter
 
 object SecureBankApp extends App {
 
@@ -15,16 +16,16 @@ object SecureBankApp extends App {
   """)
 
   sealed trait CoordMsg
-  case object RunScenario1b extends CoordMsg   // alice demande son solde
-  case object RunScenario2  extends CoordMsg   // alice déconnexion + brute-force
-  case object RunScenario3  extends CoordMsg   // credential stuffing
+  case object RunScenario1b extends CoordMsg   
+  case object RunScenario2  extends CoordMsg   
+  case object RunScenario3  extends CoordMsg   
   case object Shutdown      extends CoordMsg
 
   val system = ActorSystem(
     Behaviors.setup[CoordMsg] { ctx =>
 
-      val tokenStore     = ctx.spawn(TokenStore(),                                          "TokenStore")
-      val authServer     = ctx.spawn(AuthServer(tokenStore),                               "AuthServer")
+      val tokenStore     = ctx.spawn(TokenStore(ParquetEventWriter.write),                                          "TokenStore")
+      val authServer     = ctx.spawn(AuthServer(tokenStore, ParquetEventWriter.write),                               "AuthServer")
       val resourceServer = ctx.spawn(ResourceServer(tokenStore),                           "ResourceServer")
       val alice          = ctx.spawn(Client("alice", "pwd123", authServer, resourceServer), "client-alice")
       val attacker       = ctx.spawn(Attacker("bob", authServer, resourceServer),           "attacker")
@@ -37,14 +38,12 @@ object SecureBankApp extends App {
 
         Behaviors.receiveMessage {
 
-          // alice demande son solde (auth déjà faite à t=0)
           case RunScenario1b =>
             ctx.log.info("══ SCÉNARIO 1b : alice demande son solde ══")
             alice ! RequestBalance
             timers.startSingleTimer(RunScenario2, 400.millis)
             Behaviors.same
 
-          // alice se déconnecte ; attacker lance le brute-force sur bob
           case RunScenario2 =>
             alice ! Disconnect
             ctx.log.info("══ SCÉNARIO 2 : Brute-force (attacker → bob) ══")
@@ -52,7 +51,6 @@ object SecureBankApp extends App {
             timers.startSingleTimer(RunScenario3, 1500.millis)
             Behaviors.same
 
-          // nouvel acteur pour le credential stuffing (attacker stoppé après AccountLocked)
           case RunScenario3 =>
             ctx.log.info("══ SCÉNARIO 3 : Credential stuffing ══")
             val stuffingAttacker = ctx.spawn(

@@ -4,14 +4,18 @@ import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import org.scalatest.wordspec.AnyWordSpecLike
 import org.scalatest.matchers.should.Matchers
 import Protocols._
+import securebank.analytics.SecurityEvent
 
 class AuthServerSpec extends ScalaTestWithActorTestKit with AnyWordSpecLike with Matchers {
+
+  // Le faux writer qui bypass Spark !
+  val dummyWriter: SecurityEvent => Unit = _ => ()
 
   "AuthServer" should {
 
     "émettre un JwtToken valide pour credentials corrects" in {
-      val tokenStore = spawn(TokenStore())
-      val authServer = spawn(AuthServer(tokenStore))
+      val tokenStore = spawn(TokenStore(dummyWriter))
+      val authServer = spawn(AuthServer(tokenStore, dummyWriter)) // Injection
       val probe      = createTestProbe[AuthResponse]()
 
       authServer ! Authenticate("alice", "pwd123", probe.ref)
@@ -22,8 +26,8 @@ class AuthServerSpec extends ScalaTestWithActorTestKit with AnyWordSpecLike with
     }
 
     "refuser des credentials invalides et compter les échecs" in {
-      val tokenStore = spawn(TokenStore())
-      val authServer = spawn(AuthServer(tokenStore))
+      val tokenStore = spawn(TokenStore(dummyWriter))
+      val authServer = spawn(AuthServer(tokenStore, dummyWriter))
       val probe      = createTestProbe[AuthResponse]()
 
       authServer ! Authenticate("alice", "MAUVAIS", probe.ref)
@@ -32,30 +36,26 @@ class AuthServerSpec extends ScalaTestWithActorTestKit with AnyWordSpecLike with
     }
 
     "bloquer un compte après 3 échecs consécutifs" in {
-      val tokenStore = spawn(TokenStore())
-      val authServer = spawn(AuthServer(tokenStore))
+      val tokenStore = spawn(TokenStore(dummyWriter))
+      val authServer = spawn(AuthServer(tokenStore, dummyWriter))
       val probe      = createTestProbe[AuthResponse]()
 
-      // échec 1 → attempts == 1
       authServer ! Authenticate("alice", "MAUVAIS", probe.ref)
       probe.expectMessageType[AuthFailure]
 
-      // échec 2 → attempts == 2
       authServer ! Authenticate("alice", "MAUVAIS", probe.ref)
       probe.expectMessageType[AuthFailure]
 
-      // échec 3 → attempts >= 3 : TokenStore envoie AccountLocked
       authServer ! Authenticate("alice", "MAUVAIS", probe.ref)
       probe.expectMessage(AccountLocked)
 
-      // 4e tentative avec bon password : IsAccountLocked bloque avant vérification
       authServer ! Authenticate("alice", "pwd123", probe.ref)
       probe.expectMessage(AccountLocked)
     }
 
     "valider un token actif via CheckToken" in {
-      val tokenStore = spawn(TokenStore())
-      val authServer = spawn(AuthServer(tokenStore))
+      val tokenStore = spawn(TokenStore(dummyWriter))
+      val authServer = spawn(AuthServer(tokenStore, dummyWriter))
       val authProbe  = createTestProbe[AuthResponse]()
       val validProbe = createTestProbe[ValidationResponse]()
 
@@ -67,8 +67,8 @@ class AuthServerSpec extends ScalaTestWithActorTestKit with AnyWordSpecLike with
     }
 
     "refuser un token après révocation" in {
-      val tokenStore = spawn(TokenStore())
-      val authServer = spawn(AuthServer(tokenStore))
+      val tokenStore = spawn(TokenStore(dummyWriter))
+      val authServer = spawn(AuthServer(tokenStore, dummyWriter))
       val authProbe  = createTestProbe[AuthResponse]()
       val validProbe = createTestProbe[ValidationResponse]()
 
