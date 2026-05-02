@@ -10,10 +10,12 @@ javaOptions ++= Seq(
   "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED"
 )
 
+
 libraryDependencies ++= Seq(
   "com.typesafe.akka" %% "akka-actor-typed"         % AkkaVersion,
   "com.typesafe.akka" %% "akka-actor-testkit-typed" % AkkaVersion % Test,
   "ch.qos.logback"    %  "logback-classic"           % "1.2.11",
   "org.scalatest"     %% "scalatest"                 % "3.2.17"    % Test,
-  "org.apache.spark" %% "spark-sql" % "3.5.1"
+  "org.apache.spark" %% "spark-sql" % "3.5.1",
+  "org.apache.logging.log4j" %% "log4j-api-scala"   % "12.0" 
 )

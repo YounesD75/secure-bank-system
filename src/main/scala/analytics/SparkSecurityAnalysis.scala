@@ -2,43 +2,49 @@ package securebank.analytics
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
+import org.apache.logging.log4j.LogManager
 
 object SparkSecurityAnalysis extends App {
-
-  val spark = SparkSession.builder()
+  
+   val spark = SparkSession.builder()
     .appName("SecureBank-Security-Analysis")
     .master("local[*]")
+    .config("spark.ui.enabled", "false")  // ← Désactive l'UI Spark
     .getOrCreate()
+
+    spark.sparkContext.setLogLevel("ERROR")
+
+  val logger = LogManager.getLogger("SecureBank")
 
   import spark.implicits._
 
   val events = spark.read.parquet("data/security_events")
 
-  println("\n===== APERÇU DES DONNÉES =====")
+  logger.info("Aperçu des données")
   events.show(false)
 
-  println("\n===== SCHÉMA =====")
+  logger.info("Schéma")
   events.printSchema()
 
-  println("\n===== NOMBRE TOTAL D'ÉVÉNEMENTS =====")
-  println(events.count())
+  logger.info("Nombre total d'événements")
+  logger.info(events.count())
 
   // Nombre d’événements par type
-  println("\n===== ÉVÉNEMENTS PAR TYPE =====")
+  logger.info("Événements par type")
   events.groupBy($"eventType")
     .count()
     .orderBy(desc("count"))
     .show()
 
   // 2. Activité par utilisateur
-  println("\n===== ACTIVITÉ PAR UTILISATEUR =====")
+  logger.info("Activité par utilisateur")
   events.groupBy($"user")
     .count()
     .orderBy(desc("count"))
     .show()
 
   //  3. Détection brute-force (>= 3 échecs)
-  println("\n===== DÉTECTION BRUTE-FORCE =====")
+  logger.info("Détection brute-force")
   events
     .filter($"eventType" === "AUTH_FAILURE")
     .groupBy($"user")
@@ -47,26 +53,26 @@ object SparkSecurityAnalysis extends App {
     .show()
 
   // 4. Comptes bloqués
-  println("\n===== COMPTES BLOQUÉS =====")
+  logger.info("Comptes bloqués")
   events
     .filter($"eventType" === "ACCOUNT_LOCKED")
     .show(false)
 
   // 5. Tokens révoqués
-  println("\n===== TOKENS RÉVOQUÉS =====")
+  logger.info("Tokens révoqués")
   events
     .filter($"eventType" === "TOKEN_REVOKED")
     .show(false)
 
   //  6. Timeline des événements
-  println("\n===== TIMELINE =====")
+  logger.info("Timeline des événements")
   events
     .withColumn("date", from_unixtime($"timestamp" / 1000))
     .orderBy($"timestamp")
     .show(false)
 
   //  7. Activité par jour
-  println("\n===== ACTIVITÉ PAR JOUR =====")
+  logger.info("Activité par jour")
   events
     .withColumn("day", to_date(from_unixtime($"timestamp" / 1000)))
     .groupBy($"day")
@@ -74,7 +80,7 @@ object SparkSecurityAnalysis extends App {
     .show()
 
   // 8. Utilisateurs suspects (échecs > succès)
-  println("\n===== UTILISATEURS SUSPECTS =====")
+  logger.info("Utilisateurs suspects")
   val failures = events.filter($"eventType" === "AUTH_FAILURE")
     .groupBy($"user")
     .count()
@@ -90,7 +96,7 @@ object SparkSecurityAnalysis extends App {
     .filter($"failures" > $"success")
     .show()
 
-  println("\n===== FIN ANALYSE =====")
+  logger.info("Fin de l'analyse")
 
   spark.stop()
 }

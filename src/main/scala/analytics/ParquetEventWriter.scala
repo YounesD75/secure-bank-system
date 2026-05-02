@@ -5,11 +5,17 @@ import java.time.LocalDate
 
 object ParquetEventWriter {
 
-  lazy val spark: SparkSession =
-    SparkSession.builder()
+  lazy val spark: SparkSession = {
+  val spark = SparkSession.builder()
       .appName("SecureBank-Parquet-Writer")
       .master("local[*]")
+      .config("spark.ui.enabled", "false")
       .getOrCreate()
+
+    spark.sparkContext.setLogLevel("ERROR")
+    spark
+  }
+
 
   import spark.implicits._
 
