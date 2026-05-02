@@ -1,4 +1,5 @@
 package securebank
+import securebank.analytics.{SecurityEvent, ParquetEventWriter}
 
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.Behaviors
@@ -52,10 +53,19 @@ object TokenStore {
 
         // ─ T2 : ReportFailure — accumulation P3 → éventuel T7 ────────────
         case ReportFailure(user, replyTo) =>
+
+          ParquetEventWriter.write(
+            SecurityEvent("AUTH_FAILURE", user, System.currentTimeMillis())
+          )
+
           val attempts = state.failedAttempts.getOrElse(user, 0) + 1
           ctx.log.warn(s"[TokenStore] Échec auth — $user : $attempts/3")
 
           if (attempts >= 3) {
+
+            ParquetEventWriter.write(
+              SecurityEvent("ACCOUNT_LOCKED", user, System.currentTimeMillis())
+            )
             // ─ T7 : P3×3 → P7 Compte Bloqué ─
             ctx.log.error(s"[TokenStore] COMPTE BLOQUÉ — $user (T7 franchie)")
             replyTo ! AccountLocked
@@ -70,6 +80,10 @@ object TokenStore {
 
         // ─ T6 : RevokeToken — P4 → P6 (Token Révoqué) ────────────────────
         case RevokeToken(token) =>
+
+          ParquetEventWriter.write(
+            SecurityEvent("TOKEN_REVOKED", token.username, System.currentTimeMillis())
+          )
           ctx.log.warn(s"[TokenStore] Révocation — $token")
           store(state.copy(
             activeTokens  = state.activeTokens - token.value,

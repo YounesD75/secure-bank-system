@@ -6,6 +6,8 @@ import Protocols._
 import java.util.UUID
 import scala.concurrent.duration._
 
+import securebank.analytics.{SecurityEvent, ParquetEventWriter}
+
 object AuthServer {
 
   private val TOKEN_TTL_MS = 30000L  // 30 secondes
@@ -31,6 +33,9 @@ object AuthServer {
                 innerCtx.log.warn(s"[AuthServer] Compte bloqué — $user")
                 replyTo ! AccountLocked
               } else if (validUsers.get(user).contains(pass)) {
+                ParquetEventWriter.write(
+                  SecurityEvent("AUTH_SUCCESS", user, System.currentTimeMillis())
+                )
                 // ─ T1 : Auth OK → JWT émis ─
                 val now   = System.currentTimeMillis()
                 val token = JwtToken(
@@ -61,6 +66,9 @@ object AuthServer {
 
         // ─ T6 : RevokeTokenAuth → P6 (Token Révoqué) ─────────────────────
         case RevokeTokenAuth(token, replyTo) =>
+          ParquetEventWriter.write(
+            SecurityEvent("TOKEN_REVOKED", token.username, System.currentTimeMillis())
+          )
           ctx.log.warn(s"[AuthServer] Révocation — $token")
           tokenStore ! RevokeToken(token)
           replyTo ! TokenRevoked
