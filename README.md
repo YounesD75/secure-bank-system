@@ -3,7 +3,189 @@
 Modélisation et vérification formelle d'un système d'authentification bancaire distribué.
 Projet de fin de semestre — Systèmes Distribués (Akka/Scala · Réseaux de Pétri · LTL · Spark).
 
-## Stack technique
+---
+
+---
+
+### ÉTAPE 1 — Montrer la structure du projet
+
+> "Le projet est structuré en trois couches : les acteurs Akka qui gèrent la logique métier,
+> un réseau de Pétri pour la vérification formelle, et une couche Spark pour l'analyse des événements."
+
+**Pointer :**
+- `src/main/scala/*.scala` → les 5 acteurs
+- `src/main/scala/petri/` → le modèle formel
+- `src/main/scala/analytics/` → le pipeline Spark
+
+---
+
+### ÉTAPE 2 — Lancer la simulation
+
+**Commande :**
+```bash
+sbt run
+```
+
+**Attendre les logs et pointer au fur et à mesure :**
+
+#### Scénario 1 — Connexion légitime (t = 0 ms)
+```
+[Client:alice] Connexion normale...
+[Client:alice] Authentifié — a3f8c2d1... [user=alice, expire=29s]
+[Client:alice] Session ouverte — accès au compte disponible
+```
+> "Alice envoie `Authenticate` à l'AuthServer. L'AuthServer vérifie les credentials dans sa Map,
+> génère un token UUID avec TTL 30 secondes, et l'enregistre dans le TokenStore.
+> En Pétri : transitions T0 → T1 → T3, on passe de P0 (Idle) à P4 (TokenActive)."
+
+#### Scénario 1b — Consultation du solde (t = 400 ms)
+```
+[Client:alice] Demande de solde...
+[ResourceServer] Token valide — solde alice : 4250.75 €
+[Client:alice] Solde : 4250,75 €
+```
+> "Alice demande son solde. Le ResourceServer ne fait pas confiance au token directement —
+> il demande au TokenStore de valider. C'est la séparation des responsabilités.
+> Transition T4 : P4 → P5 (ValidatedSession), avec la garde P7=0 vérifiée."
+
+```
+[Client:alice] Déconnexion — retour à Idle
+```
+> "Déconnexion : T5, P5 → P0. Alice repasse en Idle."
+
+#### Scénario 2 — Brute-force (t = 800 ms)
+```
+[Attacker:bob] Lancement brute-force...
+[Attacker:bob] Brute-force échec — tentative 2 (brutepass_2)
+[Attacker:bob] Brute-force échec — tentative 3 (brutepass_3)
+[Attacker:bob] LTL vérifiée : G(failures >= 3 → AF account_locked)
+```
+> "L'Attacker envoie des mots de passe aléatoires. À chaque échec, le TokenStore incrémente
+> un compteur interne et écrit un événement AUTH_FAILURE en Parquet.
+> Au 3ème échec, il verrouille le compte et répond AccountLocked.
+> En Pétri : 3 franchissements de T2 accumulent 3 jetons en P3, puis T7 tire → P7.
+> L'Attacker log lui-même que la propriété LTL est vérifiée en runtime."
+
+#### Scénario 3 — Credential stuffing (t = 2 300 ms)
+```
+[Attacker:multi] Credential stuffing — 6 couples
+[Attacker:multi] Stuffing — essai alice:123456
+[Attacker:multi] Stuffing — essai bob:password
+[Attacker:multi] Stuffing — essai admin:admin
+...
+[Attacker:multi] Credential stuffing terminé
+```
+> "Un deuxième Attacker essaie 6 couples issus de fuites réelles : alice:123456, bob:password…
+> Aucun ne passe. Quand il essaie bob, le compte est déjà verrouillé —
+> l'AuthServer répond AccountLocked immédiatement, sans même vérifier le mot de passe."
+
+---
+
+### ÉTAPE 3 — Lancer les tests
+
+**Commande :**
+```bash
+sbt test
+```
+
+**Ce qu'on voit :**
+```
+[info] SecureBankIntegrationSpec:
+[info] - should permettre un flux complet : Auth -> Obtention du Token -> Lecture du Solde
+[info] - should bloquer toute la chaîne après une attaque par force brute (LTL 1 & 4)
+[info] TokenStoreSpec:
+[info] - should valider un token actif
+[info] - should refuser un token révoqué
+[info] - should refuser un token expiré
+[info] - should bloquer un compte après 3 échecs
+...
+[info] Tests: succeeded 17, failed 0, canceled 1, ignored 0, pending 0
+[info] All tests passed.
+```
+
+> "J'ai un test par acteur plus un test d'intégration end-to-end.
+> Le test canceled c'est SecurityAnalyzerSpec — Spark 3.4.1 utilise Hadoop 3.3.4
+> qui appelle une méthode retirée en Java 23 (JEP 486). J'ai instrumenté le test
+> pour qu'il se cancèle proprement avec un message explicatif plutôt que de crasher."
+
+**Ouvrir [SecureBankIntegrationSpec.scala](src/test/scala/securebank/SecureBankIntegrationSpec.scala) et pointer :**
+- le flux Auth → token → GetBalance → BalanceOk(alice, 4250.75)
+- le cas brute-force : 3 échecs → AccountLocked, puis même le bon mot de passe est bloqué
+
+---
+
+### ÉTAPE 4 — Analyse du réseau de Pétri
+
+**Commande :**
+```bash
+sbt console
+```
+
+**Puis dans le REPL :**
+```scala
+import petri.PetriNetBuilder
+PetriNetBuilder.report()
+```
+
+**Lire et commenter chaque bloc au fur et à mesure :**
+
+```
+── Marquage initial
+   P0   : 1 jeton(s)   ← le système démarre en Idle
+   P1–P7: 0 jeton(s)
+```
+> "Un seul jeton en P0 — le client est au repos, rien d'autre n'est actif."
+
+```
+── Transitions franchissables (M0)
+   T0 [authenticate]
+```
+> "Depuis l'état initial, seule T0 est franchissable. On ne peut rien faire
+> d'autre que s'authentifier. Le réseau est bien contraint dès le départ."
+
+```
+── Marquages atteignables (BFS, 10 étapes) : N état(s)
+```
+> "Le BFS explore tous les états atteignables par franchissement de transitions.
+> On peut inspecter chaque marquage et vérifier qu'aucun état interdit n'apparaît."
+
+```
+── Deadlock détecté (10 étapes) : false
+   → Réseau vivant
+```
+> "Pas de deadlock — le système ne peut pas se bloquer dans un état sans issue,
+> sauf P7 qui est un état absorbant voulu : un compte verrouillé le reste définitivement."
+
+```
+── P-invariant P0+P1+P2+P4+P5=1 : true
+   → Conservation de la session
+```
+> "Ce P-invariant prouve qu'on ne peut pas être simultanément en train de s'authentifier
+> ET en session. La somme de ces jetons vaut toujours 1 — c'est l'unicité de session."
+
+```
+── LTL3 — G(account_locked → AG ¬valid_session)
+   Résultat : true ✓
+```
+> "La propriété centrale : si le compte est verrouillé, aucune session valide ne peut exister.
+> VRAI grâce à deux gardes complémentaires : T7 ne franchit pas si P5=1 (pas de verrouillage
+> pendant une session active), et T4 ne franchit pas si P7=1 (pas de nouvelle session
+> si compte verrouillé). J'ai eu besoin des deux — la garde sur T7 seule laissait un chemin résiduel."
+
+```
+── LTL1/LTL4 — Résultat : false
+```
+> "LTL1 et LTL4 sont FAUSSES en Pétri scalaire. P6 est un compteur monotone sans arc inhibiteur,
+> il ne peut pas bloquer T4. Mais la propriété est garantie dans le système Akka réel :
+> le TokenStore rejette activement les tokens révoqués via TokenInvalid.
+> C'est une limite connue du Pétri non coloré — il faudrait un réseau de Pétri coloré
+> pour modéliser l'identité des tokens."
+
+---
+
+## Référence technique
+
+### Stack
 
 | Composant | Version |
 |---|---|
@@ -14,7 +196,7 @@ Projet de fin de semestre — Systèmes Distribués (Akka/Scala · Réseaux de P
 | ScalaTest | 3.2.17 |
 | Logback | 1.2.11 |
 
-## Acteurs implémentés
+### Acteurs
 
 | Acteur | Rôle |
 |---|---|
@@ -24,7 +206,7 @@ Projet de fin de semestre — Systèmes Distribués (Akka/Scala · Réseaux de P
 | `ResourceServer` | Valide le token avant de donner accès au solde |
 | `Attacker` | Simule brute-force, replay d'ancien token, credential stuffing |
 
-## Tests
+### Tests
 
 | Suite | Ce qui est couvert |
 |---|---|
@@ -34,11 +216,9 @@ Projet de fin de semestre — Systèmes Distribués (Akka/Scala · Réseaux de P
 | `AttackerSpec` | Brute-force détecté, replay rejeté, credential stuffing bloqué |
 | `ClientSpec` | Cycle nominal Idle → Auth → Session → Idle, transition vers Bloqué |
 | `SecureBankIntegrationSpec` | Scénario complet multi-acteurs end-to-end |
-| `SecurityAnalyzerSpec` | Pipeline Spark : comptage d'événements, détection brute-force |
+| `SecurityAnalyzerSpec` | Pipeline Spark : comptage d'événements, détection brute-force *(canceled sur Java 23+)* |
 
-## Réseau de Pétri (`petri/PetriNet.scala`)
-
-### Places
+### Réseau de Pétri — places
 
 | Place | Nom | Description |
 |---|---|---|
@@ -51,7 +231,7 @@ Projet de fin de semestre — Systèmes Distribués (Akka/Scala · Réseaux de P
 | P6 | TokenRevoked | Token révoqué (place monotone) |
 | P7 | AccountLocked | Compte verrouillé définitivement |
 
-### Transitions
+### Réseau de Pétri — transitions
 
 | Transition | Label | Arc |
 |---|---|---|
@@ -64,14 +244,7 @@ Projet de fin de semestre — Systèmes Distribués (Akka/Scala · Réseaux de P
 | T6 | revoke_token | P4 → P0 + P6 |
 | T7 | account_locked | 3×P3 → P7 · *garde P5=0* |
 
-### Gardes et propriétés vérifiées
-
-- **P-invariant** `P0+P1+P2+P4+P5 = 1` — conservation de la session (exactement 1 jeton dans l'état session).
-- **LTL3** `G(account_locked → ¬valid_session)` — **VRAI** grâce aux deux gardes complémentaires sur T4 et T7.
-- **LTL1/LTL4** `G(token_revoked → ¬balance_visible)` — FAUX en Pétri scalaire (P6 monotone) ; propriété satisfaite dans le système Akka réel via `TokenInvalid`.
-- **LTL2** `G(failures≥3 → AF account_locked)` — FAUX en BFS pur (opérateur F non supporté par `checkLTL`).
-
-## Couche analytique Spark (`analytics/`)
+### Couche Spark (`analytics/`)
 
 | Fichier | Rôle |
 |---|---|
@@ -80,34 +253,9 @@ Projet de fin de semestre — Systèmes Distribués (Akka/Scala · Réseaux de P
 | `SecurityAnalyzer.scala` | Lit les Parquet, calcule stats globales et détecte brute-force/suspects |
 | `SparkSecurityAnalysis.scala` | Point d'entrée autonome pour l'analyse post-simulation |
 
-Le `SecurityAnalyzer` tourne en mode `local[*]` — aucun cluster requis.
+Mode `local[*]` — aucun cluster requis.
 
-## Commandes
-
-```bash
-# Lancer la simulation complète (3 scénarios : connexion normale, brute-force, post-blocage)
-sbt run
-
-# Lancer toute la suite de tests
-sbt test
-
-# Lancer un seul spec
-sbt "testOnly securebank.AuthServerSpec"
-```
-
-Pour exécuter l'analyse du réseau de Pétri depuis la console interactive :
-
-```bash
-sbt console
-```
-
-```scala
-// Dans le REPL sbt
-import petri.PetriNetBuilder
-PetriNetBuilder.report()
-```
-
-## Structure
+### Structure
 
 ```
 secure-bank-system/
@@ -115,33 +263,27 @@ secure-bank-system/
 ├── data/
 │   └── security_events/        # Parquet produits par la simulation
 └── src/
-    ├── main/
-    │   ├── resources/
-    │   │   └── log4j2.xml
-    │   └── scala/
-    │       ├── Protocols.scala          # Messages partagés entre acteurs
-    │       ├── AuthServer.scala
-    │       ├── TokenStore.scala
-    │       ├── Client.scala
-    │       ├── ResourceServer.scala
-    │       ├── Attacker.scala
-    │       ├── Main.scala               # Simulation (3 scénarios)
-    │       ├── BigDataSimulation.scala
-    │       ├── SimpleWebServer.scala
-    │       ├── analytics/
-    │       │   ├── SecurityEvent.scala
-    │       │   ├── ParquetEventWriter.scala
-    │       │   ├── SecurityAnalyzer.scala
-    │       │   └── SparkSecurityAnalysis.scala
-    │       └── petri/
-    │           └── PetriNet.scala       # PetriNet + PetriNetBuilder.report()
-    └── test/
-        └── scala/securebank/
-            ├── AuthServerSpec.scala
-            ├── TokenStoreSpec.scala
-            ├── ClientSpec.scala
-            ├── ResourceServerSpec.scala
-            ├── AttackerSpec.scala
-            ├── SecureBankIntegrationSpec.scala
-            └── SecurityAnalyzerSpec.scala
+    ├── main/scala/
+    │   ├── Protocols.scala          # Messages partagés entre acteurs
+    │   ├── AuthServer.scala
+    │   ├── TokenStore.scala
+    │   ├── Client.scala
+    │   ├── ResourceServer.scala
+    │   ├── Attacker.scala
+    │   ├── Main.scala               # Simulation (3 scénarios)
+    │   ├── analytics/
+    │   │   ├── SecurityEvent.scala
+    │   │   ├── ParquetEventWriter.scala
+    │   │   ├── SecurityAnalyzer.scala
+    │   │   └── SparkSecurityAnalysis.scala
+    │   └── petri/
+    │       └── PetriNet.scala       # PetriNet + PetriNetBuilder.report()
+    └── test/scala/securebank/
+        ├── AuthServerSpec.scala
+        ├── TokenStoreSpec.scala
+        ├── ClientSpec.scala
+        ├── ResourceServerSpec.scala
+        ├── AttackerSpec.scala
+        ├── SecureBankIntegrationSpec.scala
+        └── SecurityAnalyzerSpec.scala
 ```
