@@ -16,10 +16,21 @@ object BigDataSimulation {
   val FAILURE_RATE: Double = 0.2
   val SIMULATION_DURATION: Int = 15
 
+  // val VALID_USERS: Map[String, String] = Map(
+  //   "alice" -> "pwd123",
+  //   "bob" -> "secret", 
+  //   "admin" -> "password123"
+  // )
+
   val USERS: Map[String, String] = {
     val legitUsers = (1 to NUM_GOOD_USERS).map(i => s"user$i" -> s"pass$i")
     val attackerUsers = (1 to NUM_ATTACKER_USERS).map(i => s"attacker$i" -> s"badpass$i")
-    (legitUsers ++ attackerUsers).toMap
+    val valideusers = Map(
+    "alice" -> "pwd123",
+    "bob" -> "secret", 
+    "admin" -> "password123"
+  )
+    (legitUsers ++ attackerUsers ++ valideusers).toMap
   }
 
   val COMMON_PASSWORDS = List("123456", "password", "qwerty", "admin", "letmein")
@@ -56,7 +67,7 @@ object BigDataSimulation {
   ): Behavior[SimulationCommand] = Behaviors.receive { (ctx, msg) =>
     msg match {
       case StartSimulation =>
-        ctx.log.info(s"""
+        println(s"""
           ╔══════════════════════════════════════════════════════════════════╗
           ║   🚀 BIG DATA SIMULATION - SecureBank                            ║
           ║   ${USERS.size} utilisateurs, $NUM_SESSIONS_PER_USER sessions chacun     ║
@@ -64,7 +75,7 @@ object BigDataSimulation {
         """)
         
         timers.startTimerAtFixedRate(RunBatch, 1.second)
-        timers.startSingleTimer(RunAttacks, (SIMULATION_DURATION - 3).seconds)
+        timers.startSingleTimer(RunAttacks, (SIMULATION_DURATION - 30).seconds)
         timers.startSingleTimer(Shutdown, SIMULATION_DURATION.seconds)
         Behaviors.same
 
@@ -88,7 +99,7 @@ object BigDataSimulation {
         }
 
       case RunAttacks =>
-        ctx.log.info("🔥 Lancement des attaques...")
+        println("🔥 Lancement des attaques...")
         
         val stuffingAttacker = ctx.spawn(
           Attacker("mass-stuffer", authServer, resourceServer),
@@ -106,7 +117,7 @@ object BigDataSimulation {
         Behaviors.same
 
       case Shutdown =>
-        ctx.log.info("""
+        println("""
           ╔══════════════════════════════════════════════════════════════════╗
           ║                    📊 SIMULATION TERMINÉE                         ║
           ║                                                                  ║
