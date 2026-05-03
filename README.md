@@ -28,6 +28,8 @@ sbt run
 
 **Attendre les logs et pointer au fur et à mesure :**
 
+Option [3] — securebank.SecureBankApp (Démonstration Scriptée) :
+
 #### Scénario 1 — Connexion légitime (t = 0 ms)
 ```
 [Client:alice] Connexion normale...
@@ -78,6 +80,18 @@ sbt run
 > "Un deuxième Attacker essaie 6 couples issus de fuites réelles : alice:123456, bob:password…
 > Aucun ne passe. Quand il essaie bob, le compte est déjà verrouillé —
 > l'AuthServer répond AccountLocked immédiatement, sans même vérifier le mot de passe."
+
+Option [1] 
+>"petri.PetriNetBuilder : Effectue la vérification formelle mathématique. Elle calcule les marquages atteignables et les >P-invariants pour prouver l'absence de deadlocks." 
+
+Option [2] 
+>"securebank.BigDataSimulation : Mode "Stress-Test". Elle lance 50 acteurs (utilisateurs et attaquants) en simultané pour générer un volume massif d'événements stockés au format Parquet."
+
+Option [4] 
+>"securebank.SimpleWebServer : Lance l'interface graphique (Dashboard). Elle permet de visualiser sous forme de graphiques les données analytiques produites par les simulations."
+
+Options [5] & [6]
+>"analytics.SecurityAnalyzer : Analyseurs Spark effectuant des requêtes SQL sur les fichiers Parquet pour identifier les comportements frauduleux a posteriori."
 
 ---
 
