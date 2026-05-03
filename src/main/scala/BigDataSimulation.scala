@@ -1,4 +1,3 @@
-// src/main/scala/securebank/BigDataSimulation.scala
 package securebank
 
 import akka.actor.typed.{ActorSystem, Behavior, ActorRef}
@@ -6,12 +5,10 @@ import akka.actor.typed.scaladsl.{Behaviors, TimerScheduler}
 import Protocols._
 import securebank.ResourceServer.ResourceCommand
 import scala.concurrent.duration._
-import scala.util.Random
 import securebank.analytics.ParquetEventWriter
 
 object BigDataSimulation {
 
-  // Configuration
   val NUM_USERS: Int = 50
   val NUM_GOOD_USERS: Int = 35
   val NUM_ATTACKER_USERS: Int = 10
@@ -82,8 +79,6 @@ object BigDataSimulation {
               s"client-$user"
             )
             client ! StartNormalLogin
-            
-            timers.startSingleTimer(RunBatch, 500.millis)
           }
           
           running(ctx, timers, tokenStore, authServer, resourceServer,
