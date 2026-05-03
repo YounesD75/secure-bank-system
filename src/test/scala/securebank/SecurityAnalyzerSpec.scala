@@ -10,6 +10,10 @@ class SecurityAnalyzerSpec extends AnyWordSpecLike with Matchers {
   "SecurityAnalyzer" should {
 
     "analyser correctement des événements générés localement" in {
+      assume(
+        System.getProperty("java.version").split('.')(0).toInt < 23,
+        "Spark 3.4.1 / Hadoop 3.3.4 incompatible avec Java 23+ — Subject.getSubject() retiré (JEP 486 / HADOOP-18566)"
+      )
       // 1. Nettoyer les anciennes données de test pour partir de zéro
       val testDir = new Directory(new File("data/security_events"))
       if (testDir.exists) testDir.deleteRecursively()
