@@ -1,0 +1,13 @@
+target/
+project/target/
+project/project/
+data/security_events/
+.bsp/
+.metals/
+.ammonite/
+out/
+*.class
+*.jar
+.DS_Store
+
+

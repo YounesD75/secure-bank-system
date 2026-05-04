@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <!-- Format propre : 18:25:33 [INFO] [BigDataSimulation] - Le message -->
+            <PatternLayout pattern="%d{HH:mm:ss} [%-5level] [%logger{1}] - %msg%n"/>
+        </Console>
+    </Appenders>
+    
+    <Loggers>
+        <!-- 1. TON logger corrigé (tout en minuscules, correspondant à ton package) -->
+        <Logger name="securebank" level="info" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+        
+        <!-- 2. Spark logs → les cacher (ERROR uniquement) -->
+        <Logger name="org.apache.spark" level="error" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+        <Logger name="org.sparkproject" level="error" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+        <Logger name="org.apache.hadoop" level="error" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+        <Logger name="org.apache.parquet" level="error" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+        <Logger name="org.eclipse.jetty" level="error" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+        
+        <!-- 3. Root logger par défaut -->
+        <Root level="error">
+            <AppenderRef ref="Console"/>
+        </Root>
+    </Loggers>
+</Configuration>
